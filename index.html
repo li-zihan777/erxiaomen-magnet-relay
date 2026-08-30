@@ -327,10 +327,10 @@
       <summary>数据备份与初版管理</summary>
       <div class="tools-inner">
         <button id="exportButton" type="button">导出 JSON 备份</button>
-        <label class="file-label">导入 JSON<input id="importInput" type="file" accept="application/json,.json"></label>
+        <label class="file-label">导入 JSON（需密码）<input id="importInput" type="file" accept="application/json,.json"></label>
         <button id="undoButton" type="button">撤销最近一次交棒</button>
-        <button id="resetButton" type="button">重置整个计划</button>
-        <p class="tools-note">JSON 可用于迁移和应急恢复。导入或重置会修改所有成员看到的共享状态，操作前请先导出备份。</p>
+        <button id="resetButton" type="button">重置整个计划（需密码）</button>
+        <p class="tools-note">JSON 可用于迁移和应急恢复。覆盖导入需要计划管理密码；重置同样需要密码。普通约饭、留言和撤回记录无需密码。操作前请先导出备份。</p>
       </div>
     </details>
   </main>
@@ -558,6 +558,20 @@ function createCloudStore(config, fetchImpl = fetch) {
       });
       return normalizeRow(await parseResponse(response));
     },
+
+    async adminReplace(state, adminCode, expectedRevision) {
+      const response = await fetchImpl(`${baseUrl}/rest/v1/rpc/admin_replace_magnet_state`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          p_plan_id: planId,
+          p_payload: state,
+          p_admin_code: String(adminCode),
+          p_expected_revision: Number(expectedRevision),
+        }),
+      });
+      return normalizeRow(await parseResponse(response));
+    },
   });
 }
 
@@ -656,6 +670,51 @@ function createCloudStore(config, fetchImpl = fetch) {
         return true;
       } catch (error) {
         if (/revision conflict/i.test(error.message)) {
+          showToast('其他成员刚刚更新了进度，正在载入最新版本');
+          cloudReady = false;
+        } else {
+          showToast(`保存失败：${error.message}`);
+        }
+        setCloudStatus('offline', '云端需要刷新');
+        return false;
+      } finally {
+        cloudBusy = false;
+        if (!cloudReady) refreshFromCloud({ quiet: true });
+      }
+    }
+
+    async function commitAdminState(nextState, successMessage) {
+      if (!cloudStore) {
+        showToast('计划管理密码仅在共享云端版中验证');
+        return false;
+      }
+      if (!cloudReady) {
+        showToast('云端尚未连接，请先点击顶部状态刷新');
+        return false;
+      }
+      const adminCode = prompt('请输入计划管理密码');
+      if (adminCode === null) return false;
+      if (!adminCode.trim()) {
+        showToast('没有输入计划管理密码');
+        return false;
+      }
+      cloudBusy = true;
+      setCloudStatus('syncing', '正在验证并保存…');
+      try {
+        const remote = await cloudStore.adminReplace(nextState, adminCode, cloudRevision);
+        const checked = validateState(remote.state);
+        if (!checked.ok) throw new Error(checked.error);
+        appState = remote.state;
+        cloudRevision = remote.revision;
+        cacheState();
+        renderAll();
+        setCloudStatus('connected', '云端共享已连接');
+        showToast(successMessage);
+        return true;
+      } catch (error) {
+        if (/invalid admin code/i.test(error.message)) {
+          showToast('计划管理密码不正确');
+        } else if (/revision conflict/i.test(error.message)) {
           showToast('其他成员刚刚更新了进度，正在载入最新版本');
           cloudReady = false;
         } else {
@@ -942,7 +1001,7 @@ function createCloudStore(config, fetchImpl = fetch) {
         const parsed = JSON.parse(await file.text());
         const result = validateState(parsed);
         if (!result.ok) throw new Error(result.error);
-        const saved = await commitState(parsed, '备份已经恢复到共享云端');
+        const saved = await commitAdminState(parsed, '备份已经恢复到共享云端');
         if (saved) resetDrawBox();
       } catch (error) {
         showToast(`导入失败：${error.message}`);
@@ -1009,7 +1068,7 @@ function createCloudStore(config, fetchImpl = fetch) {
       });
       $('#resetButton').addEventListener('click', async () => {
         if (!confirm('确定重置整个共享计划吗？所有成员看到的约饭和留言都会清空。建议先导出备份。')) return;
-        if (await commitState(structuredClone(INITIAL_STATE), '共享计划已经重置')) resetDrawBox();
+        if (await commitAdminState(structuredClone(INITIAL_STATE), '共享计划已经重置')) resetDrawBox();
       });
       $('#mealDialog').addEventListener('click', (event) => {
         if (event.target === $('#mealDialog')) $('#mealDialog').close();
