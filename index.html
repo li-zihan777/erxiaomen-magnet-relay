@@ -102,10 +102,9 @@
     .person-node.holder .holder-tag { display: block; }
     .person-node.holder .avatar { color: #fff; background: var(--wine); animation: breathe 2.4s ease-in-out infinite; }
     .person-node[disabled] { cursor: default; opacity: 1; }
-    .graph-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; display: grid; place-items: center; width: 112px; height: 112px; border: 1px solid rgba(111,23,55,.14); border-radius: 50%; background: rgba(248,243,234,.94); text-align: center; box-shadow: 0 0 0 12px rgba(248,243,234,.68); pointer-events: none; }
-    .magnet-icon { width: 37px; height: 37px; margin-bottom: 4px; border: 7px solid var(--wine); border-top-color: transparent; border-radius: 4px 4px 18px 18px; transform: rotate(180deg); }
-    .graph-center strong { color: var(--wine); font-family: serif; font-size: 13px; }
-    .graph-center small { display: block; max-width: 80px; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.25; }
+    .graph-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; padding: 10px 16px; text-align: center; pointer-events: none; }
+    .graph-center strong { display: block; color: var(--wine); font-family: serif; font-size: 22px; font-weight: 700; white-space: nowrap; }
+    .graph-center small { display: block; margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.25; white-space: nowrap; }
 
     .control-card { display: flex; flex-direction: column; }
     .holder-panel { margin: 22px 22px 0; padding: 22px; border-radius: 18px; color: #fff; background: linear-gradient(145deg, var(--wine-dark), var(--wine)); position: relative; overflow: hidden; }
@@ -149,6 +148,9 @@
     .timeline-food { display: inline-block; margin-top: 8px; padding: 4px 8px; border-radius: 7px; color: #49695f; background: var(--jade-soft); font-size: 11px; }
     .kind-badge { padding: 5px 8px; border-radius: 999px; color: var(--jade); background: var(--jade-soft); font-size: 11px; font-weight: 700; white-space: nowrap; }
     .kind-badge.relay { color: #8a5b16; background: #f5e9cf; }
+    .timeline-actions { display: grid; justify-items: end; gap: 9px; }
+    .timeline-undo { border: 0; padding: 5px 8px; color: #8d2c2c; background: transparent; font-size: 11px; text-decoration: underline; text-underline-offset: 3px; }
+    .timeline-undo:hover { color: var(--wine); background: var(--wine-soft); border-radius: 7px; }
 
     .story-grid { display: grid; grid-template-columns: minmax(0,.8fr) minmax(0,1.2fr); gap: 18px; }
     .message-compose, .message-wall { padding: 25px; }
@@ -214,10 +216,9 @@
       .person-node { width: 86px; min-height: 63px; padding: 7px 4px; border-radius: 15px; }
       .person-node .avatar { width: 25px; height: 25px; font-size: 12px; }
       .person-node .name { font-size: 12px; }
-      .graph-center { width: 78px; height: 78px; }
-      .magnet-icon { width: 27px; height: 27px; border-width: 5px; }
-      .graph-center strong { font-size: 10px; }
-      .graph-center small { display: none; }
+      .graph-center { padding: 6px 8px; }
+      .graph-center strong { font-size: 16px; }
+      .graph-center small { margin-top: 3px; font-size: 9px; }
       .section { padding-top: 64px; }
       .section-heading { display: block; }
       .section-heading p { margin-top: 10px; font-size: 13px; }
@@ -269,7 +270,7 @@
         </div>
         <div class="graph-wrap" id="graphWrap">
           <svg id="relationshipGraph" viewBox="0 0 1000 850" role="img" aria-label="六位成员两两关系图"></svg>
-          <div class="graph-center" aria-hidden="true"><div><div class="magnet-icon"></div><strong>二校门</strong><small>冰箱贴漂流中</small></div></div>
+          <div class="graph-center" aria-hidden="true"><strong>二校门</strong><small>冰箱贴漂流中</small></div>
           <div id="peopleLayer"></div>
         </div>
       </article>
@@ -435,6 +436,16 @@ function recordMeal(state, input) {
   };
 }
 
+function withdrawLatestMeal(state) {
+  const last = state.meals.at(-1);
+  if (!last) throw new Error('没有可以撤回的约饭记录');
+  return {
+    ...state,
+    holder: last.from,
+    meals: state.meals.slice(0, -1),
+  };
+}
+
 function unfinishedDegree(member, done) {
   return MEMBERS.reduce((count, other) => {
     if (other === member) return count;
@@ -535,14 +546,13 @@ function createCloudStore(config, fetchImpl = fetch) {
       return normalizeRow(await parseResponse(response));
     },
 
-    async update(state, passcode, expectedRevision) {
+    async update(state, expectedRevision) {
       const response = await fetchImpl(`${baseUrl}/rest/v1/rpc/update_magnet_state`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           p_plan_id: planId,
           p_payload: state,
-          p_passcode: String(passcode || ''),
           p_expected_revision: Number(expectedRevision),
         }),
       });
@@ -555,7 +565,6 @@ function createCloudStore(config, fetchImpl = fetch) {
     const CLOUD_CONFIG = {"enabled":true,"url":"https://tefjfhfixwtlzffqrihl.supabase.co","publishableKey":"sb_publishable_LBseQQ7IH-MQMmjZiBB0-g_3LZO7Gj6","planId":"main"};
 
     const STORAGE_KEY = 'thu-magnet-relay-v1';
-    const PASSCODE_KEY = 'thu-magnet-edit-code';
     const POINTS = [
       { x: 50, y: 11 }, { x: 82, y: 30 }, { x: 82, y: 70 },
       { x: 50, y: 89 }, { x: 18, y: 70 }, { x: 18, y: 30 },
@@ -592,15 +601,6 @@ function createCloudStore(config, fetchImpl = fetch) {
       pill.dataset.status = status;
       text.textContent = message;
       pill.title = status === 'connected' ? '点击从云端刷新最新进度' : message;
-    }
-
-    function requestPasscode() {
-      const existing = sessionStorage.getItem(PASSCODE_KEY);
-      if (existing) return existing;
-      const entered = prompt('请输入六班第四组编辑口令。口令只保留到本次浏览器关闭。');
-      const passcode = String(entered || '').trim();
-      if (passcode) sessionStorage.setItem(PASSCODE_KEY, passcode);
-      return passcode;
     }
 
     async function refreshFromCloud({ quiet = false } = {}) {
@@ -641,12 +641,10 @@ function createCloudStore(config, fetchImpl = fetch) {
         showToast('云端尚未连接，请先点击顶部状态刷新');
         return false;
       }
-      const passcode = requestPasscode();
-      if (!passcode) return false;
       cloudBusy = true;
       setCloudStatus('syncing', '正在保存云端…');
       try {
-        const remote = await cloudStore.update(nextState, passcode, cloudRevision);
+        const remote = await cloudStore.update(nextState, cloudRevision);
         const checked = validateState(remote.state);
         if (!checked.ok) throw new Error(checked.error);
         appState = remote.state;
@@ -657,10 +655,7 @@ function createCloudStore(config, fetchImpl = fetch) {
         showToast(successMessage);
         return true;
       } catch (error) {
-        if (/invalid edit code/i.test(error.message)) {
-          sessionStorage.removeItem(PASSCODE_KEY);
-          showToast('编辑口令不正确，请重新输入');
-        } else if (/revision conflict/i.test(error.message)) {
+        if (/revision conflict/i.test(error.message)) {
           showToast('其他成员刚刚更新了进度，正在载入最新版本');
           cloudReady = false;
         } else {
@@ -807,7 +802,18 @@ function createCloudStore(config, fetchImpl = fetch) {
         const kind = document.createElement('span');
         kind.className = `kind-badge ${meal.kind === 'relay' ? 'relay' : ''}`;
         kind.textContent = meal.kind === 'relay' ? '接力加餐' : '点亮新线';
-        item.append(date, content, kind);
+        const actions = document.createElement('div');
+        actions.className = 'timeline-actions';
+        actions.append(kind);
+        if (meal.id === appState.meals.at(-1)?.id) {
+          const undo = document.createElement('button');
+          undo.type = 'button';
+          undo.className = 'timeline-undo';
+          undo.textContent = '撤回这条记录';
+          undo.addEventListener('click', withdrawLatestRecord);
+          actions.append(undo);
+        }
+        item.append(date, content, actions);
         timeline.append(item);
       });
     }
@@ -943,6 +949,14 @@ function createCloudStore(config, fetchImpl = fetch) {
       }
     }
 
+    async function withdrawLatestRecord() {
+      const last = appState.meals.at(-1);
+      if (!last) return showToast('还没有可以撤回的约饭记录');
+      if (!confirm(`撤回 ${last.from} → ${last.to} 这条约饭记录吗？冰箱贴将回到 ${last.from} 手中。`)) return;
+      const nextState = withdrawLatestMeal(appState);
+      if (await commitState(nextState, '最新约饭记录已撤回')) resetDrawBox();
+    }
+
     function bindEvents() {
       $('#modePill').addEventListener('click', () => {
         if (cloudStore) refreshFromCloud();
@@ -991,11 +1005,7 @@ function createCloudStore(config, fetchImpl = fetch) {
         event.target.value = '';
       });
       $('#undoButton').addEventListener('click', async () => {
-        const last = appState.meals.at(-1);
-        if (!last) return showToast('还没有可以撤销的交棒');
-        if (!confirm(`撤销 ${last.from} → ${last.to} 这次共享交棒吗？`)) return;
-        const nextState = { ...appState, holder: last.from, meals: appState.meals.slice(0, -1) };
-        if (await commitState(nextState, '最近一次交棒已撤销')) resetDrawBox();
+        await withdrawLatestRecord();
       });
       $('#resetButton').addEventListener('click', async () => {
         if (!confirm('确定重置整个共享计划吗？所有成员看到的约饭和留言都会清空。建议先导出备份。')) return;
