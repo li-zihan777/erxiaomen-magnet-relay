@@ -116,6 +116,8 @@
     .primary, .secondary, .ghost, .danger { min-height: 48px; border-radius: 13px; padding: 0 18px; font-weight: 750; transition: transform .15s, box-shadow .15s, background .15s; }
     .primary { border: 0; color: #fff; background: var(--jade); box-shadow: 0 8px 20px rgba(30,116,94,.19); }
     .primary:hover { transform: translateY(-1px); box-shadow: 0 11px 25px rgba(30,116,94,.25); }
+    .draw-limit-note { margin: -4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; text-align: center; }
+    .draw-limit-note[data-used="true"] { color: var(--gold); font-weight: 700; }
     .secondary { border: 1px solid var(--wine); color: var(--wine); background: transparent; }
     .secondary:hover { background: var(--wine-soft); }
     .ghost { border: 1px solid #d7ccc4; color: var(--ink); background: #fffdf9; }
@@ -283,6 +285,7 @@
         </div>
         <div class="control-body">
           <button class="primary" id="drawButton" type="button">🎲 帮我抽下一位</button>
+          <p class="draw-limit-note" id="drawLimitNote">每天最多抽一次 · 北京时间 00:00 重置</p>
           <button class="secondary" id="openMealButton" type="button">＋ 自己选择并登记</button>
           <div class="draw-result empty" id="drawResult" aria-live="polite">还没想好约谁？<br>让冰箱贴替你做决定。</div>
           <p class="rule-note"><strong>为什么会有“接力加餐”？</strong><br>六个人的 15 条关系无法用一条不重复路线连续走完。若当前持有人已点亮自己的五条线，就先和老搭档再吃一次，把冰箱贴送往下一段新关系。</p>
@@ -528,6 +531,16 @@ function normalizeRow(rows) {
   };
 }
 
+function normalizeDrawRow(rows) {
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  if (!row) throw new CloudStoreError('每日抽签状态无效', { code: 'INVALID_DRAW_STATUS' });
+  return {
+    allowed: Boolean(row.allowed),
+    usageDate: row.usage_date,
+    nextReset: row.next_reset,
+  };
+}
+
 function createCloudStore(config, fetchImpl = fetch) {
   const baseUrl = String(config.url || '').replace(/\/$/, '');
   const publishableKey = String(config.publishableKey || '');
@@ -572,13 +585,65 @@ function createCloudStore(config, fetchImpl = fetch) {
       });
       return normalizeRow(await parseResponse(response));
     },
+
+    async drawStatus() {
+      const response = await fetchImpl(`${baseUrl}/rest/v1/rpc/get_daily_draw_status`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_plan_id: planId }),
+      });
+      return normalizeDrawRow(await parseResponse(response));
+    },
+
+    async claimDailyDraw() {
+      const response = await fetchImpl(`${baseUrl}/rest/v1/rpc/claim_daily_draw`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_plan_id: planId }),
+      });
+      return normalizeDrawRow(await parseResponse(response));
+    },
   });
+}
+
+const BEIJING_TIME_ZONE = 'Asia/Shanghai';
+
+function dateParts(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: BEIJING_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  return Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+}
+
+function beijingDateKey(value = new Date()) {
+  const parts = dateParts(value);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function nextBeijingMidnight(value = new Date()) {
+  const parts = dateParts(value);
+  const utcMidnightAfterDate = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + 1);
+  return new Date(utcMidnightAfterDate - (8 * 60 * 60 * 1000));
+}
+
+function drawStatusText(status, now = new Date()) {
+  if (status?.allowed) return '今天还可以抽签 · 明天 00:00 重置';
+  const reset = status?.nextReset ? new Date(status.nextReset) : nextBeijingMidnight(now);
+  const resetParts = dateParts(reset);
+  const today = beijingDateKey(now);
+  const resetDay = `${resetParts.year}-${resetParts.month}-${resetParts.day}`;
+  return resetDay === today ? '今日已抽签 · 稍后重置' : '今日已抽签 · 明天 00:00 重置';
 }
 
 
     const CLOUD_CONFIG = {"enabled":true,"url":"https://tefjfhfixwtlzffqrihl.supabase.co","publishableKey":"sb_publishable_LBseQQ7IH-MQMmjZiBB0-g_3LZO7Gj6","planId":"main"};
 
     const STORAGE_KEY = 'thu-magnet-relay-v1';
+    const DRAW_USAGE_KEY = 'thu-magnet-relay-draw-usage-v1';
     const POINTS = [
       { x: 50, y: 11 }, { x: 82, y: 30 }, { x: 82, y: 70 },
       { x: 50, y: 89 }, { x: 18, y: 70 }, { x: 18, y: 30 },
@@ -588,6 +653,8 @@ function createCloudStore(config, fetchImpl = fetch) {
     let cloudStore = CLOUD_CONFIG.enabled ? createCloudStore(CLOUD_CONFIG) : null;
     let cloudReady = false;
     let cloudBusy = false;
+    let drawStatusBusy = false;
+    let drawStatus = { allowed: true, usageDate: '', nextReset: '' };
     let drawnPartner = '';
     let toastTimer;
 
@@ -617,6 +684,44 @@ function createCloudStore(config, fetchImpl = fetch) {
       pill.title = status === 'connected' ? '点击从云端刷新最新进度' : message;
     }
 
+    function readLocalDrawStatus() {
+      const usageDate = beijingDateKey();
+      return {
+        allowed: localStorage.getItem(DRAW_USAGE_KEY) !== usageDate,
+        usageDate,
+        nextReset: nextBeijingMidnight().toISOString(),
+      };
+    }
+
+    function renderDrawStatus() {
+      const button = $('#drawButton');
+      const note = $('#drawLimitNote');
+      const status = cloudStore ? drawStatus : readLocalDrawStatus();
+      if (!cloudStore) drawStatus = status;
+      button.disabled = (cloudStore && !cloudReady) || !status.allowed;
+      button.textContent = status.allowed ? '🎲 帮我抽下一位' : '今日已抽签';
+      note.textContent = drawStatusText(status);
+      note.dataset.used = status.allowed ? 'false' : 'true';
+    }
+
+    async function refreshDrawStatus() {
+      if (!cloudStore) {
+        drawStatus = readLocalDrawStatus();
+        renderDrawStatus();
+        return;
+      }
+      if (!cloudReady || drawStatusBusy) return;
+      drawStatusBusy = true;
+      try {
+        drawStatus = await cloudStore.drawStatus();
+        renderDrawStatus();
+      } catch (error) {
+        if (!cloudBusy) showToast(`每日抽签状态读取失败：${error.message}`);
+      } finally {
+        drawStatusBusy = false;
+      }
+    }
+
     async function refreshFromCloud({ quiet = false } = {}) {
       if (!cloudStore || cloudBusy) return;
       cloudBusy = true;
@@ -640,6 +745,7 @@ function createCloudStore(config, fetchImpl = fetch) {
         if (!quiet) showToast(`同步失败：${error.message}`);
       } finally {
         cloudBusy = false;
+        refreshDrawStatus();
       }
     }
 
@@ -905,6 +1011,7 @@ function createCloudStore(config, fetchImpl = fetch) {
       renderTimeline();
       renderMessages();
       fillPartnerOptions();
+      renderDrawStatus();
     }
 
     function fillMemberSelect(select, includeHolder = true) {
@@ -1021,11 +1128,62 @@ function createCloudStore(config, fetchImpl = fetch) {
         if (cloudStore) refreshFromCloud();
         else showToast('当前是本机预览构建，尚未配置云端');
       });
-      $('#drawButton').addEventListener('click', () => {
+      $('#drawButton').addEventListener('click', async () => {
         if (progress(appState).remaining === 0) {
           showToast('15 条关系已经全部点亮啦');
           return;
         }
+        if (cloudStore) {
+          if (!cloudReady) {
+            showToast('云端尚未连接，请稍候再试');
+            return;
+          }
+          if (!drawStatus.allowed) {
+            showToast('今天已经抽过下一位了，明天 00:00 后再来');
+            return;
+          }
+          if (cloudBusy || drawStatusBusy) return;
+          let claimed = false;
+          cloudBusy = true;
+          setCloudStatus('syncing', '正在占用今日抽签名额…');
+          try {
+            const claim = await cloudStore.claimDailyDraw();
+            drawStatus = claim;
+            renderDrawStatus();
+            if (!claim.allowed) {
+              showToast('今天已经抽过下一位了，明天 00:00 后再来');
+              return;
+            }
+            claimed = true;
+            const remote = await cloudStore.read();
+            const checked = validateState(remote.state);
+            if (!checked.ok) throw new Error(`云端数据无效：${checked.error}`);
+            appState = remote.state;
+            cloudRevision = remote.revision;
+            cloudReady = true;
+            cacheState();
+            renderAll();
+            renderDrawResult(drawCandidate(appState));
+            setCloudStatus('connected', '云端共享已连接');
+            showToast('今日抽签成功，去约这顿饭吧');
+          } catch (error) {
+            setCloudStatus('offline', '云端需要刷新');
+            showToast(claimed ? '今日名额已占用，但页面同步失败，请刷新页面' : `抽签失败：${error.message}`);
+          } finally {
+            cloudBusy = false;
+            if (!cloudReady) refreshFromCloud({ quiet: true });
+          }
+          return;
+        }
+        const localStatus = readLocalDrawStatus();
+        if (!localStatus.allowed) {
+          showToast('今天已经抽过下一位了，明天 00:00 后再来');
+          renderDrawStatus();
+          return;
+        }
+        localStorage.setItem(DRAW_USAGE_KEY, localStatus.usageDate);
+        drawStatus = { ...localStatus, allowed: false };
+        renderDrawStatus();
         renderDrawResult(drawCandidate(appState));
       });
       $('#openMealButton').addEventListener('click', () => openMealDialog());
@@ -1086,6 +1244,7 @@ function createCloudStore(config, fetchImpl = fetch) {
     } else {
       setCloudStatus('local', '本机预览模式');
     }
+    setInterval(() => refreshDrawStatus(), 30000);
   </script>
 </body>
 </html>
