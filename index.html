@@ -655,6 +655,7 @@ function drawStatusText(status, now = new Date()) {
     let cloudBusy = false;
     let drawStatusBusy = false;
     let drawStatus = { allowed: true, usageDate: '', nextReset: '' };
+    let drawStatusTimer;
     let drawnPartner = '';
     let toastTimer;
 
@@ -702,6 +703,14 @@ function drawStatusText(status, now = new Date()) {
       button.textContent = status.allowed ? '🎲 帮我抽下一位' : '今日已抽签';
       note.textContent = drawStatusText(status);
       note.dataset.used = status.allowed ? 'false' : 'true';
+      scheduleDrawStatusRefresh(status);
+    }
+
+    function scheduleDrawStatusRefresh(status) {
+      clearTimeout(drawStatusTimer);
+      const nextReset = Date.parse(status?.nextReset || '');
+      if (!Number.isFinite(nextReset)) return;
+      drawStatusTimer = setTimeout(() => refreshDrawStatus(), Math.max(250, nextReset - Date.now() + 250));
     }
 
     async function refreshDrawStatus() {
